@@ -29,19 +29,27 @@ There are various commands that can be run from inside the container.
 
 Check device statuses with:
 `ccorc ccorc status all`
+
 Discover devices through mDNS with:
 `ccorc doctor`
+
 Sync manifests to all devices with:
 `ccorc sync all`
+
 Sync manifests to a specific machine with:
 `ccorc sync bedroom-hd`
+
 Sync specific manifests with:
 `ccorc sync --settings`
+
 Uninstall specific apps with:
 `ccorc uninstall all com.foo.bar`
+
 Install APKs with:
 `ccorc install all /data/apks/x.apk`
+
 Install Apps from the Play Store with:
 `ccorc playstore all com.foo.bar`
+
 Use ADB shell commands with:
 `ccorc shell all 'settings put secure foo 1'`
