@@ -3,7 +3,7 @@ FROM alpine:latest
 # ENVIRONMENT
 ENV TZ="Canada/Atlantic"
 ENV HOME="/data/home"
-ENV CCTL_DATA="/data"
+ENV CCORC_DATA="/data"
 ENV ADB_MDNS_OPENSCREEN="1"
 
 # BASICS
@@ -13,8 +13,8 @@ RUN apk add --no-cache bash curl sed android-tools
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # ADD APPLICATION
-COPY cctl /usr/local/bin/cctl
-RUN chmod +x /usr/local/bin/cctl
+COPY ccorc /usr/local/bin/ccorc
+RUN chmod +x /usr/local/bin/ccorc
 
 # CMD
-CMD ["cctl", "keepalive"]
+CMD ["ccorc", "keepalive"]
