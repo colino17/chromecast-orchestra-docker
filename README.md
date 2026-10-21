@@ -20,9 +20,6 @@ Devices need to be added to "data/devices.conf" with the following format "name,
 ```
 ccorc pair <ip>:<pairing-port> <code>
 ```
-Devices can be discovered using 
-4. Check discovery: `docker exec ccorc r` (mDNS services should list your devices).
-5. `docker exec `
 
 ## Manifests
 There are various manifests within the data directory that can be used for syncing statuses between devices. These include apps to install, disable, or uninstall, settings to apply, and permissions to grant.
