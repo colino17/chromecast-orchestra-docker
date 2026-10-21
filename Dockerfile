@@ -3,7 +3,6 @@ FROM alpine:latest
 # ENVIRONMENT
 ENV TZ="Canada/Atlantic"
 ENV HOME="/data/home"
-ENV CCORC_DATA="/data"
 ENV ADB_MDNS_OPENSCREEN="1"
 
 # BASICS
