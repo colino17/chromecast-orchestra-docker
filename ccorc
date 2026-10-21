@@ -290,6 +290,19 @@ ccorc <command> [args]      <target> is a device name, a,b,c list, or "all"
 USAGE
 }
 
+# First run: create the folder layout and header-only manifest files (never overwrites).
+seed() { [[ -f "$1" ]] || printf '%s\n' "$2" > "$1"; }
+init_data() {
+  mkdir -p "$M" "$APKS" "$SETTINGS" "$HOME/.android" 2>/dev/null
+  seed "$DEVICES"            "# <name> <wifi_ip> [ethernet_ip]   e.g.  livingroom-4k 192.168.1.50 192.168.1.150"
+  seed "$M/uninstall.txt"    "# packages to uninstall, one per line (do not also list them in playstore.txt)"
+  seed "$M/apks.txt"         "# <package> <source> [asset-regex]   source: github:owner/repo | http(s) URL | filename in apks/"
+  seed "$M/playstore.txt"    "# packages to install from the Play Store, one per line"
+  seed "$M/grants.txt"       "# shell commands run on each device, one per line (appops, pm grant, settings put ...)"
+  seed "$M/disable.txt"      "# packages to disable, one per line (list launchers last)"
+  seed "$M/settings.txt"     "# <file in settings/> [seconds to wait for the restore]"
+}
+
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 for c in adb curl timeout sed awk; do need "$c"; done
 
@@ -300,9 +313,8 @@ case "$cmd" in
   doctor) adb version; echo "--- mdns check"; adb mdns check; echo "--- services"; adb mdns services; exit 0 ;;
 esac
 
-# keepalive tolerates a missing/empty devices.conf (it waits); other commands need it.
-[[ "$cmd" == keepalive || -f "$DEVICES" ]] || die "missing $DEVICES (see README)"
-mkdir -p "$HOME/.android" 2>/dev/null
+init_data
+[[ -f "$DEVICES" ]] || die "cannot create $DEVICES (is the data volume mounted and writable?)"
 adb start-server >/dev/null 2>&1
 
 case "$cmd" in
