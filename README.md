@@ -9,17 +9,13 @@ services:
     container_name: chromecast-orchestra
     image: ghcr.io/colino17/chromecast-orchestra-docker:latest
     restart: always
-    network_mode: host
     volumes:
       - /path/to/data:/data
     environment:
       - TZ=Canada/Atlantic
 ```
 ## Connecting Devices
-Devices need to be added to "data/devices.conf" with the following format "name, Wireless IP, Ethernet IP (optional)". Once added, each device needs to be paired manually once (this includes enabling developer settings, turning on wireless debugging, and pairing with the device code). The command for pairing is:
-```
-ccorc pair <ip>:<pairing-port> <code>
-```
+Devices need to be added to "data/devices.conf" with the following format "name ipaddress". 
 
 ## Manifests
 There are various manifests within the data directory that can be used for syncing statuses between devices. These include apps to install, disable, or uninstall, settings to apply, and permissions to grant.
