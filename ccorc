@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+# ccorc - fleet manager for Chromecast with Google TV devices, over ADB (fixed port 5555).
+# Runs inside the container; see README.md. `ccorc help` lists commands.
+set -u
+
+DATA="${CCORC_DATA:-/data}"
+PORT="${CCORC_PORT:-5555}"
+JOBS="${CCORC_JOBS:-4}"                      # devices handled in parallel
+INTERVAL="${CCORC_INTERVAL:-30}"             # keepalive loop period (seconds)
+PLAY_TIMEOUT="${CCORC_PLAY_TIMEOUT:-300}"    # max wait per Play Store install (seconds)
+OPENER="${CCORC_OPENER:-com.cxinventor.file.explorer/com.alphainventor.filemanager.activity.MainActivity}"
+REMOTE_DIR="${CCORC_REMOTE_DIR:-/storage/emulated/0/Documents}"
+DEVICES="$DATA/devices.conf"
+M="$DATA/manifest"
+APKS="$DATA/apks"
+SETTINGS="$DATA/settings"
+UPDATE=0
+WITH_SETTINGS=0
+
+export ADB_MDNS_OPENSCREEN="${ADB_MDNS_OPENSCREEN:-1}"
+
+log() { printf '%s %s\n' "$(date '+%T')" "$*"; }
+die() { echo "error: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- device list
+
+# Prints "name wifi_ip final_ip" per device (final_ip = ethernet IP, else wifi IP).
+devices() {
+  awk 'NF && $1 !~ /^#/ { print $1, $2, ($3 ? $3 : $2) }' "$DEVICES"
+}
+
+# First column of each non-comment line.
+manifest() { awk 'NF && $1 !~ /^#/ { print $1 }' "$1"; }
+
+match() { [[ "$1" == all ]] || [[ ",$1," == *",$2,"* ]]; }
+
+is_up() {
+  timeout 8 adb connect "$1:$PORT" >/dev/null 2>&1 </dev/null
+  [[ "$(timeout 5 adb -s "$1:$PORT" get-state 2>/dev/null </dev/null)" == device ]]
+}
+
+# ------------------------------------------------- per-device helpers
+# These run inside fanout(), where SERIAL is set to "<ip>:<port>".
+
+A() { adb -s "$SERIAL" "$@" </dev/null; }
+S() { A shell "$@" | tr -d '\r'; }
+
+refresh() {
+  PKGS="$(S pm list packages)"
+  DIS="$(S pm list packages -d)"
+  [[ -n "$PKGS" ]]
+}
+has()         { grep -qx "package:$1" <<<"$PKGS"; }
+is_disabled() { grep -qx "package:$1" <<<"$DIS"; }
+
+do_uninstall() {
+  local p out rc=0
+  refresh || return 1
+  for p in "$@"; do
+    has "$p" || continue
+    out="$(S pm uninstall --user 0 "$p" 2>&1)"
+    if [[ "$out" == *Success* ]]; then echo "uninstalled $p"; else echo "FAILED uninstall $p: $out"; rc=1; fi
+  done
+  return $rc
+}
+
+do_disable() {
+  local p out rc=0
+  refresh || return 1
+  for p in "$@"; do
+    has "$p" || continue
+    is_disabled "$p" && continue
+    out="$(S pm disable-user --user 0 "$p" 2>&1)"
+    if [[ "$out" == *disabled* ]]; then echo "disabled $p"; else echo "FAILED disable $p: $out"; rc=1; fi
+  done
+  return $rc
+}
+
+do_install() {
+  local f out rc=0
+  for f in "$@"; do
+    [[ -f "$f" ]] || { echo "FAILED: no such file $f"; rc=1; continue; }
+    echo "installing $(basename "$f")"
+    out="$(A install -r "$f" 2>&1)"
+    [[ "$out" == *Success* ]] || { echo "FAILED install $f: $out"; rc=1; }
+  done
+  return $rc
+}
+
+# Opens the Play Store page, presses the focused button once, then polls until installed.
+do_playstore() {
+  local p i rc=0
+  for p in "$@"; do
+    refresh || return 1
+    has "$p" && continue
+    echo "play store: $p"
+    A shell input keyevent 224                       # wake
+    A shell am start -a android.intent.action.VIEW -d "market://details?id=$p" >/dev/null
+    sleep 6
+    A shell input keyevent 23                        # DPAD_CENTER on "Install"
+    for (( i = 0; i < PLAY_TIMEOUT; i += 5 )); do
+      sleep 5
+      refresh; has "$p" && break
+    done
+    if has "$p"; then echo "installed $p"; else echo "FAILED play store install $p (re-run to retry)"; rc=1; fi
+  done
+  return $rc
+}
+
+# Each non-comment line is run as a shell command on the device.
+do_grants() {
+  local line rc=0
+  while IFS= read -r line; do
+    [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
+    A shell "$line" >/dev/null 2>&1 || { echo "FAILED: $line"; rc=1; }
+  done < "$1"
+  return $rc
+}
+
+do_shell() { S "$@"; }
+
+# apks.txt: "<package> <source> [asset-regex]"
+apk_file() { case "$2" in github:*|http*) echo "$APKS/$1.apk" ;; *) echo "$APKS/$2" ;; esac; }
+
+do_apks() {
+  local pkg src pat
+  local rc=0
+  refresh || return 1
+  while read -r pkg src pat; do
+    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+    if has "$pkg" && (( ! UPDATE )); then continue; fi
+    do_install "$(apk_file "$pkg" "$src")" || rc=1
+  done < "$M/apks.txt"
+  return $rc
+}
+
+# settings.txt: "<file in settings/> [seconds-to-wait]". Pushes the file, then opens it
+# in the file explorer so the owning app offers to restore it.
+do_settings() {
+  [[ -f "$M/settings.txt" ]] || { echo "no settings.txt"; return 0; }
+  local f wait rc=0
+  while read -r f wait; do
+    [[ -z "$f" || "$f" == \#* ]] && continue
+    [[ -f "$SETTINGS/$f" ]] || { echo "FAILED: settings/$f missing"; rc=1; continue; }
+    echo "restoring $f (waiting ${wait:-120}s)"
+    A push "$SETTINGS/$f" "$REMOTE_DIR/" >/dev/null || { rc=1; continue; }
+    A shell am start -n "$OPENER" -a android.intent.action.VIEW -d "file://$REMOTE_DIR/$f" >/dev/null
+    sleep "${wait:-120}"
+  done < "$M/settings.txt"
+  return $rc
+}
+
+status_one() { echo "up  $(S getprop ro.product.device)  android $(S getprop ro.build.version.release)"; }
+
+# Full desired-state pass. Order matters: launcher disables belong last in disable.txt.
+sync_device() {
+  local rc=0
+  [[ -f "$M/uninstall.txt" ]] && { do_uninstall $(manifest "$M/uninstall.txt") || rc=1; }
+  [[ -f "$M/apks.txt" ]]      && { do_apks || rc=1; }
+  [[ -f "$M/playstore.txt" ]] && { do_playstore $(manifest "$M/playstore.txt") || rc=1; }
+  [[ -f "$M/grants.txt" ]]    && { do_grants "$M/grants.txt" || rc=1; }
+  [[ -f "$M/disable.txt" ]]   && { do_disable $(manifest "$M/disable.txt") || rc=1; }
+  (( WITH_SETTINGS ))         && { do_settings || rc=1; }
+  return $rc
+}
+
+# ---------------------------------------------------------------- fan-out
+
+# fanout <target|all|name,name> <function> [args...]
+fanout() {
+  local target="$1" fn="$2"; shift 2
+  local tmp line name wifi final n=0 ok=0 failed=() DEVS=()
+  tmp="$(mktemp -d)"
+  mapfile -t DEVS < <(devices)
+
+  for line in "${DEVS[@]}"; do
+    read -r name wifi final <<<"$line"
+    match "$target" "$name" || continue
+    (
+      SERIAL="$final:$PORT"
+      if is_up "$final"; then "$fn" "$@"; rc=$?; else echo "unreachable ($SERIAL)"; rc=1; fi
+      echo "$rc" > "$tmp/$name"
+    ) 2>&1 | sed -u "s/^/[$name] /" &
+    if (( ++n >= JOBS )); then wait -n; n=$((n - 1)); fi
+  done
+  wait
+
+  for line in "${DEVS[@]}"; do
+    read -r name wifi final <<<"$line"
+    [[ -f "$tmp/$name" ]] || continue
+    if [[ "$(<"$tmp/$name")" == 0 ]]; then ok=$((ok + 1)); else failed+=("$name"); fi
+  done
+  rm -rf "$tmp"
+
+  (( ok + ${#failed[@]} )) || die "no device matches '$target'"
+  echo "done: $ok ok, ${#failed[@]} failed${failed[*]:+ (${failed[*]})}"
+  (( ${#failed[@]} == 0 ))
+}
+
+# ---------------------------------------------------------------- apk downloads
+
+resolve_url() { # <source> [asset-regex]
+  local pat="${2:-}"; [[ -n "$pat" ]] || pat='\.apk$'
+  case "$1" in
+    github:*)
+      curl -fsSL "https://api.github.com/repos/${1#github:}/releases/latest" \
+        | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 \
+        | grep -E "$pat" | head -1 ;;
+    *) echo "$1" ;;
+  esac
+}
+
+prepare_apks() {
+  [[ -f "$M/apks.txt" ]] || return 0
+  mkdir -p "$APKS"
+  local pkg src pat url f
+  while read -r pkg src pat; do
+    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+    case "$src" in github:*|http*) ;; *) continue ;; esac
+    f="$APKS/$pkg.apk"
+    if [[ -f "$f" ]] && (( ! UPDATE )); then continue; fi
+    url="$(resolve_url "$src" "${pat:-}")"
+    [[ -n "$url" ]] || { log "could not resolve $src"; continue; }
+    log "downloading $pkg"
+    if curl -fsSL -o "$f.tmp" "$url"; then mv "$f.tmp" "$f"; else rm -f "$f.tmp"; log "download failed: $url"; fi
+  done < "$M/apks.txt"
+}
+
+# ---------------------------------------------------------------- keepalive
+
+wireless_port() { # <ip> -> Wireless debugging port, via mDNS
+  adb mdns services 2>/dev/null </dev/null \
+    | awk -v ip="$1" '$2 ~ /_adb-tls-connect/ && index($3, ip ":") == 1 { split($3, a, ":"); print a[2]; exit }'
+}
+
+# If <final>:5555 is down, reach the device through Wireless debugging and re-enable tcpip.
+restore_one() {
+  local name="$1" wifi="$2" final="$3" wport target i
+  is_up "$final" && return 0
+  log "[$name] $final:$PORT is down; trying wireless debugging on $wifi"
+  wport="$(wireless_port "$wifi")"
+  [[ -n "$wport" ]] || { log "[$name] no wireless debugging service found (off, asleep, or no Wi-Fi?)"; return 1; }
+  target="$wifi:$wport"
+  timeout 8 adb connect "$target" >/dev/null 2>&1 </dev/null
+  if [[ "$(timeout 5 adb -s "$target" get-state 2>/dev/null </dev/null)" != device ]]; then
+    log "[$name] cannot connect to $target (not paired or not authorized?)"
+    adb disconnect "$target" >/dev/null 2>&1 </dev/null
+    return 1
+  fi
+  log "[$name] switching to tcpip $PORT"
+  timeout 10 adb -s "$target" tcpip "$PORT" >/dev/null 2>&1 </dev/null
+  sleep 3
+  adb disconnect "$target" >/dev/null 2>&1 </dev/null
+  for i in 1 2 3 4 5; do
+    is_up "$final" && { log "[$name] restored $final:$PORT"; return 0; }
+    sleep 2
+  done
+  log "[$name] still down after tcpip"
+  return 1
+}
+
+keepalive_pass() {
+  local line name wifi final DEVS=()
+  mapfile -t DEVS < <(devices)
+  for line in "${DEVS[@]}"; do
+    read -r name wifi final <<<"$line"
+    restore_one "$name" "$wifi" "$final"
+  done
+}
+
+# ---------------------------------------------------------------- main
+
+usage() {
+  cat <<'USAGE'
+ccorc <command> [args]      <target> is a device name, a,b,c list, or "all"
+
+  status    <target>                    reachability, model, Android version
+  sync      <target> [--update-apks] [--settings]
+                                        apply data/manifest/* (idempotent)
+  uninstall <target> <pkg>...           remove packages for user 0
+  disable   <target> <pkg>...           disable packages (pm disable-user)
+  install   <target> <apk>...           adb install -r (paths inside the container)
+  playstore <target> <pkg>...           install from the Play Store via UI keypress
+  grants    <target> [file]             run each line as a device shell command
+  settings  <target>                    push + restore app backups (settings.txt)
+  shell     <target> <command...>       run an ad-hoc device shell command
+  pair      <ip:pairing-port> <code>    one-time Wireless debugging pairing
+  keepalive [--once]                    keep ADB :5555 alive across reboots (container default)
+  doctor                                check adb + mDNS discovery
+USAGE
+}
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
+for c in adb curl timeout sed awk; do need "$c"; done
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  help|-h|--help) usage; exit 0 ;;
+  pair)   [[ $# -eq 2 ]] || die "usage: ccorc pair <ip:pairing-port> <code>"; adb start-server >/dev/null 2>&1; exec adb pair "$1" "$2" ;;
+  doctor) adb version; echo "--- mdns check"; adb mdns check; echo "--- services"; adb mdns services; exit 0 ;;
+esac
+
+[[ -f "$DEVICES" ]] || die "missing $DEVICES (see README)"
+mkdir -p "$HOME/.android" 2>/dev/null
+adb start-server >/dev/null 2>&1
+
+case "$cmd" in
+  keepalive)
+    if [[ "${1:-}" == --once ]]; then keepalive_pass; exit 0; fi
+    log "keepalive: port $PORT, every ${INTERVAL}s"
+    while true; do keepalive_pass; sleep "$INTERVAL"; done ;;
+  status)    fanout "${1:?target required}" status_one ;;
+  sync)
+    t="${1:?target required}"; shift
+    for a in "$@"; do
+      case "$a" in
+        --update-apks) UPDATE=1 ;;
+        --settings)    WITH_SETTINGS=1 ;;
+        *) die "unknown flag: $a" ;;
+      esac
+    done
+    prepare_apks
+    fanout "$t" sync_device ;;
+  uninstall) t="${1:?target required}"; shift; fanout "$t" do_uninstall "$@" ;;
+  disable)   t="${1:?target required}"; shift; fanout "$t" do_disable "$@" ;;
+  install)   t="${1:?target required}"; shift; fanout "$t" do_install "$@" ;;
+  playstore) t="${1:?target required}"; shift; fanout "$t" do_playstore "$@" ;;
+  grants)    t="${1:?target required}"; shift; fanout "$t" do_grants "${1:-$M/grants.txt}" ;;
+  settings)  fanout "${1:?target required}" do_settings ;;
+  shell)     t="${1:?target required}"; shift; fanout "$t" do_shell "$@" ;;
+  *) usage; exit 1 ;;
+esac
