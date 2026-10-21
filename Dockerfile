@@ -7,7 +7,7 @@ ENV CCORC_DATA="/data"
 ENV ADB_MDNS_OPENSCREEN="1"
 
 # BASICS
-RUN apk add --no-cache bash curl sed android-tools
+RUN apk add --no-cache bash curl sed android-tools tzdata
 
 # TIMEZONE
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
