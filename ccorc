@@ -300,15 +300,24 @@ case "$cmd" in
   doctor) adb version; echo "--- mdns check"; adb mdns check; echo "--- services"; adb mdns services; exit 0 ;;
 esac
 
-[[ -f "$DEVICES" ]] || die "missing $DEVICES (see README)"
+# keepalive tolerates a missing/empty devices.conf (it waits); other commands need it.
+[[ "$cmd" == keepalive || -f "$DEVICES" ]] || die "missing $DEVICES (see README)"
 mkdir -p "$HOME/.android" 2>/dev/null
 adb start-server >/dev/null 2>&1
 
 case "$cmd" in
   keepalive)
-    if [[ "${1:-}" == --once ]]; then keepalive_pass; exit 0; fi
+    if [[ "${1:-}" == --once ]]; then [[ -f "$DEVICES" ]] || die "missing $DEVICES"; keepalive_pass; exit 0; fi
     log "keepalive: port $PORT, every ${INTERVAL}s"
-    while true; do keepalive_pass; sleep "$INTERVAL"; done ;;
+    warned=0
+    while true; do
+      if [[ -n "$(devices 2>/dev/null)" ]]; then
+        warned=0; keepalive_pass
+      elif (( ! warned )); then
+        log "no devices in $DEVICES yet; waiting (edit the file, no restart needed)"; warned=1
+      fi
+      sleep "$INTERVAL"
+    done ;;
   status)    fanout "${1:?target required}" status_one ;;
   sync)
     t="${1:?target required}"; shift
