@@ -36,13 +36,14 @@ There are various manifests within the data directory that can be used for synci
 Anything placed in the "share" folder will be pushed to the "Documents" folder of your device on a sync. This is a quick way to distribute settings/backup files to multiple devices at once. Note that this simply places the files on the device. You will still need to manually restore any backups using the methods built into the respective apps.
 
 ## Commands
-There are various commands that can be run from inside the container. These commands can be run on different target devices, whether that be a single device, multiple devices (comma separated), or "all" devices.
+There are various commands that can be run from inside the container. These commands can be run on different target devices, whether that be a single device, multiple devices (comma separated), or "all" devices (the pull and text commands need to target a specific single device).
 
 | Purpose | Command |
 |---------|---------|
 | Sync manifests and push settings files to devices | `ccorc sync <target>` |
 | Run shell commands on devices | `ccorc shell <target> "<command>"` |
 | Input text on a specific device | `ccorc text <target> "<text>"` |
+| Pull files from a target device's Documents folder | `ccorc pull <target>` |
 | Display commands | `ccorc help` |
 
 ## WEB UI
