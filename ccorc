@@ -146,6 +146,10 @@ do_share() {
   return $rc
 }
 
+# pull: the reverse of do_share. Copies everything in the device's Documents folder into share/
+# (the trailing /. copies the folder's contents, not a "Documents" subfolder). Overwrites same-named files.
+do_pull() { A pull "$REMOTE_DIR/." "$SHARE/"; }
+
 # shell.txt: each non-comment line is run as a shell command on the device.
 do_shell_file() {
   local line out rc=0
@@ -233,6 +237,7 @@ usage() {
 ccorc <command> [args]      <target> is a device name, a,b,c list, or "all"
 
   sync   <target>                apply data/manifest/* and push data/share/* to Documents
+  pull   <device>                copy the device's Documents folder into data/share/ (one device only)
   shell  <target> <command>      run a shell command on the device(s)
   text   <target> <text>         type text on the device(s); "Hello World" works as-is
   web                            start the web UI (container default)
@@ -263,6 +268,9 @@ adb start-server >/dev/null 2>&1
 
 case "$cmd" in
   sync)  fanout "${1:?target required}" sync_device ;;
+  pull)  t="${1:?device name required}"
+         [[ "$t" != all && "$t" =~ ^[A-Za-z0-9._-]+$ ]] || die "pull needs exactly one device name (not 'all' or a list)"
+         fanout "$t" do_pull ;;
   shell) t="${1:?target required}"; shift; (( $# )) || die "usage: ccorc shell <target> <command>"; fanout "$t" A shell "$@" ;;
   text)  t="${1:?target required}"; shift; [[ -n "$*" ]] || die "usage: ccorc text <target> <text>"; fanout "$t" do_text "$@" ;;
   web)   web ;;
