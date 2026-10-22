@@ -22,8 +22,9 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- helpers
 
-devices()  { awk 'NF && $1 !~ /^#/ { print $1, $2 }' "$DEVICES"; }      # "name ip"
-manifest() { awk 'NF && $1 !~ /^#/ { print $1 }' "$1"; }                 # first column
+rd()       { tr -d '\r' < "$1"; }                                         # file contents without CRs (Windows edits)
+devices()  { rd "$DEVICES" | awk 'NF && $1 !~ /^#/ { print $1, $2 }'; }   # "name ip"
+manifest() { rd "$1" | awk 'NF && $1 !~ /^#/ { print $1 }'; }             # first column
 match()    { [[ "$1" == all ]] || [[ ",$1," == *",$2,"* ]]; }             # target selector
 
 is_up() {
@@ -125,7 +126,7 @@ do_apks() {
     echo "installing $file"
     out="$(A install -r "$f" 2>&1)"
     [[ "$out" == *Success* ]] || { echo "FAILED install $file: $out"; rc=1; }
-  done < "$M/apks.txt"
+  done < <(rd "$M/apks.txt")
   return $rc
 }
 
@@ -142,11 +143,11 @@ do_share() {
 
 # shell.txt: each non-comment line is run as a shell command on the device.
 do_shell_file() {
-  local line rc=0
+  local line out rc=0
   while IFS= read -r line; do
     [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
-    A shell "$line" >/dev/null 2>&1 || { echo "FAILED: $line"; rc=1; }
-  done < "$M/shell.txt"
+    if out="$(A shell "$line" 2>&1)"; then echo "ran: $line"; else echo "FAILED: $line${out:+ ($out)}"; rc=1; fi
+  done < <(rd "$M/shell.txt")
   return $rc
 }
 
