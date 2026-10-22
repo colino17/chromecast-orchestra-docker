@@ -23,13 +23,18 @@ die() { echo "error: $*" >&2; exit 1; }
 # ---------------------------------------------------------------- helpers
 
 rd()       { tr -d '\r' < "$1"; }                                         # file contents without CRs (Windows edits)
-devices()  { rd "$DEVICES" | awk 'NF && $1 !~ /^#/ { print $1, $2 }'; }   # "name ip"
+devices()  { rd "$DEVICES" | awk 'NF && $1 !~ /^#/ {                          # "name ip"
+               if (NF >= 2 && $1 ~ /^[A-Za-z0-9._-]+$/) print $1, $2
+               else print "ignoring bad line in devices.conf: " $0 > "/dev/stderr" }'; }
 manifest() { rd "$1" | awk 'NF && $1 !~ /^#/ { print $1 }'; }             # first column
 match()    { [[ "$1" == all ]] || [[ ",$1," == *",$2,"* ]]; }             # target selector
 
-is_up() {
+is_up() {   # sets WHY to adb's first error line when the device is not usable
   timeout 8 adb connect "$1:$PORT" >/dev/null 2>&1 </dev/null
-  [[ "$(timeout 5 adb -s "$1:$PORT" get-state 2>/dev/null </dev/null)" == device ]]
+  WHY="$(timeout 5 adb -s "$1:$PORT" get-state 2>&1 </dev/null)"
+  [[ "$WHY" == device ]] && return 0
+  WHY="${WHY%%$'\n'*}"
+  return 1
 }
 
 # ------------------------------------------------- per-device operations
@@ -41,10 +46,10 @@ S() { A shell "$@" | tr -d '\r'; }
 refresh() {
   PKGS="$(S pm list packages)"
   DIS="$(S pm list packages -d)"
-  [[ -n "$PKGS" ]]
+  [[ -n "$PKGS" ]] || { echo "could not read the package list"; return 1; }
 }
-has()         { grep -qx "package:$1" <<<"$PKGS"; }
-is_disabled() { grep -qx "package:$1" <<<"$DIS"; }
+has()         { grep -qxF "package:$1" <<<"$PKGS"; }
+is_disabled() { grep -qxF "package:$1" <<<"$DIS"; }
 
 do_uninstall() {
   local p out rc=0
@@ -77,7 +82,7 @@ do_playstore() {
     has "$p" && continue
     echo "play store: $p"
     A shell input keyevent 224                       # wake
-    A shell am start -a android.intent.action.VIEW -d "market://details?id=$p" >/dev/null
+    A shell am start -a android.intent.action.VIEW -d "'market://details?id=$p'" >/dev/null
     sleep 6
     A shell input keyevent 23                        # DPAD_CENTER on "Install"
     for (( i = 0; i < PLAY_TIMEOUT; i += 5 )); do
@@ -163,6 +168,7 @@ do_text() {
 # Full desired-state pass. Order matters: list launchers last in disable.txt.
 sync_device() {
   local rc=0
+  refresh || return 1                          # device can't list packages: fail once, skip every stage
   do_uninstall $(manifest "$M/uninstall.txt") || rc=1
   do_apks                                     || rc=1
   do_playstore $(manifest "$M/playstore.txt") || rc=1
@@ -187,7 +193,7 @@ fanout() {
     total=$((total + 1))
     (
       SERIAL="$ip:$PORT"
-      if is_up "$ip"; then "$fn" "$@" || touch "$tmp/$name"; else echo "unreachable ($SERIAL)"; touch "$tmp/$name"; fi
+      if is_up "$ip"; then "$fn" "$@" || touch "$tmp/$name"; else echo "unreachable ($SERIAL): ${WHY:-timed out}"; touch "$tmp/$name"; fi
     ) 2>&1 | sed -u "s/^/[$name] /" &
     if (( ++n >= JOBS )); then wait -n; n=$((n - 1)); fi
   done
@@ -209,13 +215,15 @@ web() {
   local conf=/tmp/httpd.conf
   command -v httpd >/dev/null 2>&1 || die "httpd not found (install the busybox-extras package)"
   if [[ -n "${CCORC_WEB_PASS:-}" ]]; then
-    echo "/:${CCORC_WEB_USER:-admin}:$CCORC_WEB_PASS" > "$conf"
+    [[ "${CCORC_WEB_USER:-admin}${CCORC_WEB_PASS}" != *:* ]] || die "CCORC_WEB_USER and CCORC_WEB_PASS must not contain ':'"
+    ( umask 077; rm -f "$conf"; echo "/:${CCORC_WEB_USER:-admin}:$CCORC_WEB_PASS" > "$conf" )
   else
     : > "$conf"
     log "web: CCORC_WEB_PASS is not set, so the UI is open to anyone who can reach port $WEB_PORT"
   fi
+  unset CCORC_WEB_PASS                           # not needed past this point; keep it out of httpd/CGI environments
   log "web: listening on :$WEB_PORT"
-  exec httpd -f -vv -p "$WEB_PORT" -h "$WWW" -c "$conf"
+  exec httpd -f -v -p "$WEB_PORT" -h "$WWW" -c "$conf"
 }
 
 # ---------------------------------------------------------------- main
