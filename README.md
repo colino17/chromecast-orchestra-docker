@@ -13,9 +13,9 @@ services:
       - /path/to/data:/data
     environment:
       - TZ=Canada/Atlantic
-      - CCORC_PORT=5555
-      - CCORC_INTERVAL=30
-    port:
+      - CCORC_WEB_USER=admin
+      - CCORC_WEB_PASS=password
+    ports:
       - 9276:9276
 ```
 ## Connecting Devices
@@ -46,7 +46,7 @@ There are various commands that can be run from inside the container. These comm
 | Display commands | `ccorc help` |
 
 ## WEB UI
-There is a Web UI available at http://ipaddress:9276 that allows you to input text.
+There is a Web UI available at http://ipaddress:9276 that allows you to input text. If no username and password are specified via compose then the Web UI won't have any authentication method.
 
 ## Disclosure
 Claude was heavily used to assist the development of the subject code. Gemini was also used as a secondary code auditing tool.
