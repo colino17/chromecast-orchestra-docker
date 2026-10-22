@@ -21,6 +21,7 @@
   body {
     font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color: var(--text);
+    background: var(--bg);                                   /* fallback if color-mix() is unsupported */
     background: radial-gradient(900px 420px at 50% -80px, color-mix(in srgb, var(--accent) 22%, transparent), transparent), var(--bg);
     min-height: 100dvh; display: flex; align-items: center; justify-content: center;
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
@@ -60,19 +61,19 @@
 <body>
 <main>
   <h1>Chromecast Orchestra</h1>
-  <p class="sub">Type on a TV from your phone or computer.</p>
+  <p class="sub">Send text to your Chromecast...</p>
   <form id="form">
     <div class="field">
-      <label for="device">Device</label>
+      <label for="device">Device:</label>
       <select id="device" disabled><option>Loading…</option></select>
     </div>
     <div class="field">
-      <label for="text">Text</label>
-      <textarea id="text" enterkeyhint="send" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Focus a text field on the TV, then type here"></textarea>
-      <p class="hint">Enter sends. Plain ASCII works best; emoji and accented characters usually don't type.</p>
+      <label for="text">Text:</label>
+      <textarea id="text" enterkeyhint="send" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Open a text field on your device and then enter the text you would like to send here..."></textarea>
+      <p class="hint"></p>
     </div>
     <div class="row">
-      <label class="check"><input type="checkbox" id="clear" checked> Clear after sending</label>
+      <label class="check"><input type="checkbox" id="clear" checked> Clear After Sending</label>
     </div>
     <button id="send" type="submit" disabled>Send</button>
     <div id="msg" role="status" aria-live="polite"></div>
@@ -107,12 +108,13 @@ txt.addEventListener('keydown', e => {
 
 form.addEventListener('submit', async e => {
   e.preventDefault();
+  if (btn.disabled) return;            // a send is already in flight (or devices not loaded)
   const text = txt.value;
   if (!text.trim() || !sel.value) { txt.focus(); return; }
   btn.disabled = true; say('Sending…');
   try {
     const r = await fetch('cgi-bin/text?device=' + encodeURIComponent(sel.value), {
-      method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: text
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: text
     });
     const body = (await r.text()).trim();
     if (r.ok) { say('Sent to ' + sel.value, 'ok'); if (clr.checked) txt.value = ''; txt.focus(); }
