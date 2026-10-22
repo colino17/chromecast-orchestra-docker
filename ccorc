@@ -14,7 +14,6 @@ DEVICES="$DATA/devices.conf"
 M="$DATA/manifest"
 APKS="$DATA/apks"
 SETTINGS="$DATA/settings"
-UPDATE=0
 WITH_SETTINGS=0
 
 log() { printf '%s %s\n' "$(date '+%T')" "$*"; }
@@ -99,26 +98,50 @@ do_playstore() {
   return $rc
 }
 
-# grants.txt: each non-comment line is run as a shell command on the device.
-do_grants() {
+# shell <cmd...>: ad-hoc command. shell (no args): run each line of manifest/shell.txt.
+do_shell() {
   local line rc=0
+  (( $# )) && { A shell "$@"; return; }
   while IFS= read -r line; do
     [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
     A shell "$line" >/dev/null 2>&1 || { echo "FAILED: $line"; rc=1; }
-  done < "$M/grants.txt"
+  done < "$M/shell.txt"
   return $rc
 }
 
-# apks.txt: "<package> <source> [asset-regex]". Installs missing packages (all, with --update-apks).
-apk_file() { case "$2" in github:*|http*) echo "$APKS/$1.apk" ;; *) echo "$APKS/$2" ;; esac; }
+# apks.txt: "<package> <version> <file in apks/>". Installs when the package is missing or
+# <version> is higher than the versionName on the device (self-updated apps are left alone).
+ver() { S dumpsys package "$1" | sed -n 's/^ *versionName=//p' | head -1; }
+
+# newer A B: succeeds if version A is higher than B. Compares dot/dash separated segments,
+# numerically when both are numbers (so 0.10.0 > 0.9.0), otherwise as text.
+newer() {
+  local IFS='.-_+' i x y
+  local -a a b
+  read -ra a <<<"$1"; read -ra b <<<"$2"
+  for (( i = 0; i < ${#a[@]} || i < ${#b[@]}; i++ )); do
+    x="${a[i]:-0}"; y="${b[i]:-0}"
+    [[ "$x" == "$y" ]] && continue
+    if [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]]; then
+      (( 10#$x == 10#$y )) && continue
+      (( 10#$x > 10#$y )); return
+    fi
+    [[ "$x" > "$y" ]]; return
+  done
+  return 1
+}
 
 do_apks() {
-  local pkg src pat rc=0
+  local pkg want file have rc=0
   refresh || return 1
-  while read -r pkg src pat; do
+  while read -r pkg want file; do
     [[ -z "$pkg" || "$pkg" == \#* ]] && continue
-    if has "$pkg" && (( ! UPDATE )); then continue; fi
-    do_install "$(apk_file "$pkg" "$src")" || rc=1
+    if has "$pkg"; then
+      have="$(ver "$pkg")"
+      newer "$want" "$have" || continue
+      echo "$pkg: $have -> $want"
+    fi
+    do_install "$APKS/$file" || rc=1
   done < "$M/apks.txt"
   return $rc
 }
@@ -146,7 +169,7 @@ sync_device() {
   do_uninstall $(manifest "$M/uninstall.txt") || rc=1
   do_apks                                     || rc=1
   do_playstore $(manifest "$M/playstore.txt") || rc=1
-  do_grants                                   || rc=1
+  do_shell                                    || rc=1
   do_disable $(manifest "$M/disable.txt")     || rc=1
   (( ! WITH_SETTINGS )) || do_settings        || rc=1
   return $rc
@@ -181,41 +204,7 @@ fanout() {
   (( ${#failed[@]} == 0 ))
 }
 
-# ---------------------------------------------------------------- apk downloads
-
-resolve_url() { # <source> [asset-regex]
-  local pat="${2:-}"; [[ -n "$pat" ]] || pat='\.apk$'
-  case "$1" in
-    github:*)
-      curl -fsSL "https://api.github.com/repos/${1#github:}/releases/latest" \
-        | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 \
-        | grep -E "$pat" | head -1 ;;
-    *) echo "$1" ;;
-  esac
-}
-
-# Downloads github:/http sources once, on the server, before fanning out.
-prepare_apks() {
-  local pkg src pat url f
-  while read -r pkg src pat; do
-    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
-    case "$src" in github:*|http*) ;; *) continue ;; esac
-    f="$APKS/$pkg.apk"
-    if [[ -f "$f" ]] && (( ! UPDATE )); then continue; fi
-    url="$(resolve_url "$src" "${pat:-}")"
-    [[ -n "$url" ]] || { log "could not resolve $src"; continue; }
-    log "downloading $pkg"
-    if curl -fsSL -o "$f.tmp" "$url"; then mv "$f.tmp" "$f"; else rm -f "$f.tmp"; log "download failed: $url"; fi
-  done < "$M/apks.txt"
-}
-
 # ---------------------------------------------------------------- monitor
-
-notify() { # log, and POST to CCORC_NOTIFY_URL if set (ntfy, Gotify, Home Assistant webhook...)
-  log "$*"
-  [[ -z "${CCORC_NOTIFY_URL:-}" ]] || curl -fsS -m 10 -d "$*" "$CCORC_NOTIFY_URL" >/dev/null 2>&1 </dev/null
-  return 0
-}
 
 declare -A STATE
 monitor_pass() {
@@ -226,14 +215,14 @@ monitor_pass() {
     if is_up "$ip"; then now=up; else now=down; fi
     [[ "${STATE[$name]:-}" == "$now" ]] && continue
     # report every change, plus a device that is already down on first sight
-    if [[ -n "${STATE[$name]:-}" || "$now" == down ]]; then notify "[$name] $ip:$PORT is $now"; fi
+    if [[ -n "${STATE[$name]:-}" || "$now" == down ]]; then log "[$name] $ip:$PORT is $now"; fi
     STATE[$name]="$now"
   done
 }
 
 monitor() {
   local warned=0
-  log "monitor: port $PORT, every ${INTERVAL}s${CCORC_NOTIFY_URL:+, notifying}"
+  log "monitor: port $PORT, every ${INTERVAL}s"
   while true; do
     if [[ -n "$(devices)" ]]; then
       warned=0; monitor_pass
@@ -250,17 +239,16 @@ usage() {
   cat <<'USAGE'
 ccorc <command> [args]      <target> is a device name, a,b,c list, or "all"
 
-  monitor                               log/notify when a device's :5555 goes down or returns (container default)
+  monitor                               log when a device's :5555 goes down or returns (container default)
   status    <target>                    reachability, model, Android version
-  sync      <target> [--update-apks] [--settings]
+  sync      <target> [--settings]
                                         apply data/manifest/* (idempotent)
   uninstall <target> <pkg>...           remove packages for user 0
   disable   <target> <pkg>...           disable packages (pm disable-user)
   install   <target> <apk>...           adb install -r (paths inside the container)
   playstore <target> <pkg>...           install from the Play Store via UI keypress
-  grants    <target>                    run manifest/grants.txt on the device
   settings  <target>                    push + restore app backups (settings.txt)
-  shell     <target> <command...>       run an ad-hoc device shell command
+  shell     <target> [command...]       run a device shell command, or manifest/shell.txt if none given
 USAGE
 }
 
@@ -270,14 +258,14 @@ init_data() {
   mkdir -p "$M" "$APKS" "$SETTINGS" "$HOME/.android" 2>/dev/null
   seed "$DEVICES"         "# <name> <ip>   e.g.  livingroom-4k 192.168.1.50"
   seed "$M/uninstall.txt" "# packages to uninstall, one per line (do not also list them in playstore.txt)"
-  seed "$M/apks.txt"      "# <package> <source> [asset-regex]   source: github:owner/repo | http(s) URL | filename in apks/"
+  seed "$M/apks.txt"      "# <package> <version> <file in apks/>   installed if missing or <version> is newer than the device; e.g.  io.github.colino17.jellyshim 0.3.0 jellyshim.apk"
   seed "$M/playstore.txt" "# packages to install from the Play Store, one per line"
-  seed "$M/grants.txt"    "# shell commands run on each device, one per line (appops, pm grant, settings put ...)"
+  seed "$M/shell.txt"     "# shell commands run on each device, one per line (appops, pm grant, settings put ...)"
   seed "$M/disable.txt"   "# packages to disable, one per line (list launchers last)"
   seed "$M/settings.txt"  "# <file in settings/> [seconds to wait for the restore]"
 }
 
-for c in adb curl timeout sed awk; do command -v "$c" >/dev/null 2>&1 || die "missing required command: $c"; done
+for c in adb timeout sed awk; do command -v "$c" >/dev/null 2>&1 || die "missing required command: $c"; done
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in help|-h|--help) usage; exit 0 ;; esac
@@ -287,25 +275,17 @@ init_data
 adb start-server >/dev/null 2>&1
 
 case "$cmd" in
-  monitor|keepalive) monitor ;;
+  monitor)   monitor ;;
   status)    fanout "${1:?target required}" status_one ;;
   sync)
     t="${1:?target required}"; shift
-    for a in "$@"; do
-      case "$a" in
-        --update-apks) UPDATE=1 ;;
-        --settings)    WITH_SETTINGS=1 ;;
-        *) die "unknown flag: $a" ;;
-      esac
-    done
-    prepare_apks
+    case "${1:-}" in "") ;; --settings) WITH_SETTINGS=1 ;; *) die "unknown flag: $1" ;; esac
     fanout "$t" sync_device ;;
   uninstall) t="${1:?target required}"; shift; fanout "$t" do_uninstall "$@" ;;
   disable)   t="${1:?target required}"; shift; fanout "$t" do_disable "$@" ;;
   install)   t="${1:?target required}"; shift; fanout "$t" do_install "$@" ;;
   playstore) t="${1:?target required}"; shift; fanout "$t" do_playstore "$@" ;;
-  grants)    fanout "${1:?target required}" do_grants ;;
   settings)  fanout "${1:?target required}" do_settings ;;
-  shell)     t="${1:?target required}"; shift; fanout "$t" S "$@" ;;
+  shell)     t="${1:?target required}"; shift; fanout "$t" do_shell "$@" ;;
   *) usage; exit 1 ;;
 esac
