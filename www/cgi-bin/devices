@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
-# Lists device names (one per line) for the web UI dropdown.
+
+# LIST OF DEVICES TO ADD TO THE TEX INPUT DROPDOWN MENU
 printf 'Content-Type: text/plain\r\n\r\n'
-awk 'NF && $1 !~ /^#/ { print $1 }' "${CCORC_DATA:-/data}/devices.conf"
+awk 'NF >= 2 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9._-]+$/ { print $1 }' "${CCORC_DATA:-/data}/devices.conf"
