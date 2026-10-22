@@ -17,7 +17,7 @@ RUN chmod +x /usr/local/bin/ccorc
 # SETUP WEBUI
 COPY www /www
 RUN chmod 755 /www/cgi-bin/*
-EXPOSE 9276 www /www
+EXPOSE 9276
 
 # CMD
 CMD ["ccorc", "web"]
