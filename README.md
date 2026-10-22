@@ -42,7 +42,7 @@ There are various commands that can be run from inside the container. These comm
 |---------|---------|
 | Sync manifests and push settings files to devices | `ccorc sync <target>` |
 | Run shell commands on devices | `ccorc shell <target> "<command>"` |
-| Input text on a specific device | `ccorc text "<text>"` |
+| Input text on a specific device | `ccorc text <target> "<text>"` |
 | Display commands | `ccorc help` |
 
 ## WEB UI
