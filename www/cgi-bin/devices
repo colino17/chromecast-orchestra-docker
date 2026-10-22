@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Lists device names (one per line) for the web UI dropdown.
+printf 'Content-Type: text/plain\r\n\r\n'
+awk 'NF && $1 !~ /^#/ { print $1 }' "${CCORC_DATA:-/data}/devices.conf"
