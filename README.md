@@ -13,6 +13,10 @@ services:
       - /path/to/data:/data
     environment:
       - TZ=Canada/Atlantic
+      - CCORC_PORT=5555
+      - CCORC_INTERVAL=30
+    port:
+      - 9276:9276
 ```
 ## Connecting Devices
 Devices need to be added to "data/devices.conf" with the following format "name ipaddress". 
@@ -20,41 +24,29 @@ Devices need to be added to "data/devices.conf" with the following format "name 
 ## Manifests
 There are various manifests within the data directory that can be used for syncing statuses between devices. These include apps to install, disable, or uninstall, settings to apply, and permissions to grant.
 
+| Manifest | Purpose | Format |
+|----------|---------|--------|
+| apks.txt | Installs/Updates APKs using APKs stored in the "apks" folder | `<package> <version> <file>` |
+| disable.txt | Disables listed packages | `<package>` |
+| playstore.txt | Installs packages from the Play Store | `<package>` |
+| shell.txt | Runs specific shell commands on sync | `<command>` |
+| uninstall.txt | Uninstalls existing packages | `<package>` |
+
+## Share Folder
+Anything placed in the "share" folder will be pushed to the "Documents" folder of your device on a sync. This is a quick way to distribute settings/backup files to multiple devices at once. Note that this simply places the files on the device. You will still need to manually restore any backups using the methods built into the respective apps.
+
 ## Commands
-There are various commands that can be run from inside the container.
+There are various commands that can be run from inside the container. These commands can be run on different target devices, whether that be a single device, multiple devices (comma separated), or "all" devices.
 
-Check device statuses with:
+| Purpose | Command |
+|---------|---------|
+| Sync manifests and push settings files to devices | `ccorc sync <target>` |
+| Run shell commands on devices | `ccorc shell <target> "<command>"` |
+| Input text on a specific device | `ccorc text "<text>"` |
+| Display commands | `ccorc help` |
 
-`ccorc ccorc status all`
+## WEB UI
+There is a Web UI available at http://ipaddress:9276 that allows you to input text.
 
-Discover devices through mDNS with:
-
-`ccorc doctor`
-
-Sync manifests to all devices with:
-
-`ccorc sync all`
-
-Sync manifests to a specific machine with:
-
-`ccorc sync bedroom-hd`
-
-Sync specific manifests with:
-
-`ccorc sync --settings`
-
-Uninstall specific apps with:
-
-`ccorc uninstall all com.foo.bar`
-
-Install APKs with:
-
-`ccorc install all /data/apks/x.apk`
-
-Install Apps from the Play Store with:
-
-`ccorc playstore all com.foo.bar`
-
-Use ADB shell commands with:
-
-`ccorc shell all 'settings put secure foo 1'`
+## Disclosure
+Claude was heavily used to assist the development of the subject code. Gemini was also used as a secondary code auditing tool.
