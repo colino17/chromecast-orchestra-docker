@@ -19,7 +19,7 @@ services:
       - 9276:9276
 ```
 ## Connecting Devices
-Devices need to be added to "data/devices.conf" with the following format "name ipaddress". 
+Devices need to be added to "data/devices.conf" with the following format "name ipaddress". Once added, go to the Web UI, select the newly added device, and try to send a text message. This should trigger the authorization dialog on the device. After you accept then the device should connect properly.
 
 ## Manifests
 There are various manifests within the data directory that can be used for syncing statuses between devices. These include apps to install, disable, or uninstall, settings to apply, and permissions to grant.
