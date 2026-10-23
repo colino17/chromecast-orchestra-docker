@@ -1,35 +1,44 @@
 #!/usr/bin/env bash
-# ccorc - fleet manager for Chromecast with Google TV devices, over ADB (fixed port 5555).
-# Runs inside the container. `ccorc help` lists commands.
+########################################### CHROMECAST ORCHESTRA ##########################################
+# A central orchestration server deployed via Docker Compose for managing Chromecast deployments on a LAN #
+###########################################################################################################
+
 set -u
 
+# DEFINE VARIABLES
 DATA="${CCORC_DATA:-/data}"
 PORT="${CCORC_PORT:-5555}"
-JOBS="${CCORC_JOBS:-4}"                      # devices handled in parallel
-PLAY_TIMEOUT="${CCORC_PLAY_TIMEOUT:-300}"    # max wait per Play Store install (seconds)
+JOBS="${CCORC_JOBS:-4}"
+PLAY_TIMEOUT="${CCORC_PLAY_TIMEOUT:-300}"
 WEB_PORT="${CCORC_WEB_PORT:-9276}"
 WWW="${CCORC_WWW:-/www}"
-REMOTE_DIR=/storage/emulated/0/Documents     # where share/ is pushed
+REMOTE_DIR=/storage/emulated/0/Documents
 DEVICES="$DATA/devices.conf"
 M="$DATA/manifest"
 APKS="$DATA/apks"
 SHARE="$DATA/share"
 
-: "${HOME:=$DATA/home}"; export HOME         # adb keeps its key in $HOME/.android (the web server may start us without HOME)
+# THIS ENSURES THAT THE ADB KEYS ARE STORED ON THE DATA VOLUME INSTEAD OF INSIDE THE CONTAINER LAYER
+: "${HOME:=$DATA/home}"; export HOME
 
+# LOGGING FUNCTION
 log() { printf '%s %s\n' "$(date '+%T')" "$*"; }
+
+# FUNCTION TO EXIT ON ERROR
 die() { echo "error: $*" >&2; exit 1; }
 
-# ---------------------------------------------------------------- helpers
+## HELPER FUNCTIONS ##
+# FUNCTION TO FIX WINDOWS LINE ENDINGS (LIKELY NOT NECCESARY IN MOST CASES)
+rd()       { tr -d '\r' < "$1"; }
 
-rd()       { tr -d '\r' < "$1"; }                                         # file contents without CRs (Windows edits)
 devices()  { rd "$DEVICES" | awk 'NF && $1 !~ /^#/ {                          # "name ip"
                if (NF >= 2 && $1 ~ /^[A-Za-z0-9._-]+$/) print $1, $2
                else print "ignoring bad line in devices.conf: " $0 > "/dev/stderr" }'; }
 manifest() { rd "$1" | awk 'NF && $1 !~ /^#/ { print $1 }'; }             # first column
 match()    { [[ "$1" == all ]] || [[ ",$1," == *",$2,"* ]]; }             # target selector
 
-is_up() {   # sets WHY to adb's first error line when the device is not usable
+# LOGS REASON FOR ADB FAILURES
+is_up() {
   timeout 8 adb connect "$1:$PORT" >/dev/null 2>&1 </dev/null
   WHY="$(timeout 5 adb -s "$1:$PORT" get-state 2>&1 </dev/null)"
   [[ "$WHY" == device ]] && return 0
@@ -74,7 +83,7 @@ do_disable() {
   return $rc
 }
 
-# Opens the Play Store page, presses the focused button once, then polls until installed.
+# FUNCTION FOR INSTALLING APPS FROM THE PLAYSTORE
 do_playstore() {
   local p i rc=0
   for p in "$@"; do
@@ -94,12 +103,10 @@ do_playstore() {
   return $rc
 }
 
-# apks.txt: "<package> <version> <file in apks/>". Installs when the package is missing or
-# <version> is higher than the versionName on the device (self-updated apps are left alone).
+# GETS VERSION NUMBER OF INSTALLED PACKAGES
 ver() { S dumpsys package "$1" | sed -n 's/^ *versionName=//p' | head -1; }
 
-# newer A B: succeeds if version A is higher than B. Compares dot/dash separated segments,
-# numerically when both are numbers (so 0.10.0 > 0.9.0), otherwise as text.
+# COMPARES MANIFEST VERSION TO INSTALLED VERSIONS
 newer() {
   local IFS='.-_+' i x y
   local -a a b
@@ -116,6 +123,7 @@ newer() {
   return 1
 }
 
+# FUNCTION FOR INSTALLING APKS
 do_apks() {
   local pkg want file have f out rc=0
   refresh || return 1
@@ -135,7 +143,7 @@ do_apks() {
   return $rc
 }
 
-# Everything in share/ is pushed to the device's Documents folder.
+# FUNCTION TO PUSH SHARES TO DEVICE DOCUMENTS FOLDER
 do_share() {
   local f rc=0
   for f in "$SHARE"/*; do
@@ -146,11 +154,10 @@ do_share() {
   return $rc
 }
 
-# pull: the reverse of do_share. Copies everything in the device's Documents folder into share/
-# (the trailing /. copies the folder's contents, not a "Documents" subfolder). Overwrites same-named files.
+# FUNCTION TO PULL FROM DOCUMENTS TO SHARE FOLDER
 do_pull() { A pull "$REMOTE_DIR/." "$SHARE/"; }
 
-# shell.txt: each non-comment line is run as a shell command on the device.
+# FUNCTION FOR RUNNING ADB SHELL COMMANDS
 do_shell_file() {
   local line out rc=0
   while IFS= read -r line; do
@@ -160,7 +167,7 @@ do_shell_file() {
   return $rc
 }
 
-# `input text` needs spaces written as %s and shell-safe quoting; do both so plain text works.
+# FUNCTION FOR SENDING TEXT INPUTS
 do_text() {
   local t="$*"
   t="${t//$'\r'/ }"; t="${t//$'\n'/ }"       # one line only
@@ -169,10 +176,10 @@ do_text() {
   A shell input text "'$t'" && echo "sent"
 }
 
-# Full desired-state pass. Order matters: list launchers last in disable.txt.
+# FUNCTION FOR DOING FULL SYNCS
 sync_device() {
   local rc=0
-  refresh || return 1                          # device can't list packages: fail once, skip every stage
+  refresh || return 1
   do_uninstall $(manifest "$M/uninstall.txt") || rc=1
   do_apks                                     || rc=1
   do_playstore $(manifest "$M/playstore.txt") || rc=1
@@ -211,10 +218,7 @@ fanout() {
   (( ${#failed[@]} == 0 ))
 }
 
-# ---------------------------------------------------------------- web UI
-
-# Serves $WWW with busybox httpd (static page + two small CGI scripts that call ccorc).
-# Optional login: set CCORC_WEB_PASS (and CCORC_WEB_USER, default "admin"). No colons in either.
+# WEBUI FUNCTION FOR SENDING TEXT
 web() {
   local conf=/tmp/httpd.conf
   command -v httpd >/dev/null 2>&1 || die "httpd not found (install the busybox-extras package)"
@@ -225,27 +229,29 @@ web() {
     : > "$conf"
     log "web: CCORC_WEB_PASS is not set, so the UI is open to anyone who can reach port $WEB_PORT"
   fi
-  unset CCORC_WEB_PASS                           # not needed past this point; keep it out of httpd/CGI environments
+  unset CCORC_WEB_PASS
   log "web: listening on :$WEB_PORT"
   exec httpd -f -v -p "$WEB_PORT" -h "$WWW" -c "$conf"
 }
 
-# ---------------------------------------------------------------- main
-
+# HELP COMMAND FOR DISPLAYING FUNCTIONS
 usage() {
   cat <<'USAGE'
-ccorc <command> [args]      <target> is a device name, a,b,c list, or "all"
-
-  sync   <target>                apply data/manifest/* and push data/share/* to Documents
-  pull   <device>                copy the device's Documents folder into data/share/ (one device only)
-  shell  <target> <command>      run a shell command on the device(s)
-  text   <target> <text>         type text on the device(s); "Hello World" works as-is
-  web                            start the web UI (container default)
-  help                           show this help
+COMMANDS
+===============================================================================================================
+ccorc sync <target>                 Sync manifests to target devices
+ccorc pull <device>                 Pull a specific device's documents folder into the server's share folder
+ccorc shell <target> <command>      Run a specific ADB shell command on target devices
+ccorc text <target> <text>          Push input text to a specific device
+ccorc web                           Start the WEB UI
+ccorc help                          List the available commands
+===============================================================================================================
+Commands can target one device, multiple devices (comma separated) or "all" devices. 
+The pull and text commands can only target a single device.
 USAGE
 }
 
-# First run: create the folder layout and header-only manifest files (never overwrites).
+# SET UP FOLDERS AND FILES ON FIRST RUN
 seed() { [[ -f "$1" ]] || printf '%s\n' "$2" > "$1"; }
 init_data() {
   mkdir -p "$M" "$APKS" "$SHARE" "$HOME/.android" 2>/dev/null
